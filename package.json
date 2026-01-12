@@ -12,14 +12,12 @@
     "@google/genai": "^1.35.0",
     "@pollinations/react": "^2.0.7",
     "@tanstack/react-query": "^5.90.16",
-    "@x402/core": "^2.2.0",
-    "@x402/evm": "^2.2.0",
-    "@x402/next": "^2.2.0",
     "next": "16.1.1",
     "postcss": "^8.5.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "wagmi": "^3.3.1"
+    "viem": "^2.44.1",
+    "wagmi": "^3.3.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
