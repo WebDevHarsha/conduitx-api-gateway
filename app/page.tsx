@@ -113,9 +113,8 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-gray-50 p-8 font-sans">
       <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-lg">
-        <h1 className="text-3xl font-bold mb-6 text-indigo-700">Shardeum Gateway</h1>
+        <h1 className="text-3xl font-bold mb-6 text-indigo-700">ConduitX AI API Gateway</h1>
 
-        {/* Wallet Control */}
         <div className="flex justify-between items-center mb-8 p-4 bg-gray-100 rounded-lg">
           {mounted && isConnected ? (
             <div className="flex items-center gap-4">
@@ -139,17 +138,16 @@ export default function Page() {
             </button>
           )}
         </div>
-
-        {/* Input Form */}
+        
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">AI Prompt</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Text to Text model</label>
             <textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
               className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-indigo-500"
               rows={3}
-              placeholder="Ask Gemini something..."
+              placeholder="Ask Conduit something..."
             />
           </div>
 
@@ -162,7 +160,6 @@ export default function Page() {
           </button>
         </form>
 
-        {/* Status & Output */}
         <div className="mt-6 space-y-4">
           {paymentStatus && (
             <div className="p-3 bg-blue-50 text-blue-700 rounded border border-blue-200 text-sm">
