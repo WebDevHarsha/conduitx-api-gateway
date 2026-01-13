@@ -1,41 +1,15 @@
 "use client";
 
 import React, { useState } from "react";
-import { useAccount, useConnect, useDisconnect, useWalletClient, useSwitchChain } from "wagmi";
-import { baseSepolia } from "wagmi/chains";
-import { x402Client } from "@x402/core/client";
-import { registerExactEvmScheme } from "@x402/evm/exact/client";
-import type { WalletClient, Account } from "viem";
-import type { ClientEvmSigner } from "@x402/evm";
-
-// Convert wagmi wallet client to x402 signer
-function wagmiToClientSigner(walletClient: WalletClient): ClientEvmSigner {
-  if (!walletClient.account) {
-    throw new Error("Wallet client must have an account");
-  }
-
-  return {
-    address: walletClient.account.address,
-    signTypedData: async (message) => {
-      const signature = await walletClient.signTypedData({
-        account: walletClient.account as Account,
-        domain: message.domain,
-        types: message.types,
-        primaryType: message.primaryType,
-        message: message.message,
-      });
-      return signature;
-    },
-  };
-}
+import { useAccount, useConnect, useDisconnect, useWalletClient, useSwitchChain, usePublicClient } from "wagmi";
+import { shardeumMezame } from "./lib/chains";
+import { parseAbi, formatUnits } from "viem";
 
 export default function Page() {
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [info, setInfo] = useState<any>(null);
-  const [paymentRequired, setPaymentRequired] = useState<any>(null);
   const [paymentStatus, setPaymentStatus] = useState("");
   const [mounted, setMounted] = useState(false);
 
@@ -43,308 +17,173 @@ export default function Page() {
   const { connect, connectors } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChain } = useSwitchChain();
-  const { data: walletClient } = useWalletClient({ chainId: baseSepolia.id });
+  const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
 
   React.useEffect(() => {
     setMounted(true);
   }, []);
 
-  React.useEffect(() => {
-    console.log("Wallet state changed - isConnected:", isConnected, "chain:", chain?.id, "walletClient:", walletClient);
-  }, [isConnected, chain, walletClient]);
-
-  const getApiInfo = async () => {
-    try {
-      const res = await fetch("/api/ai");
-      const data = await res.json();
-      setInfo(data);
-    } catch (err) {
-      console.error("Failed to fetch API info:", err);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    console.log("Submit clicked - isConnected:", isConnected, "walletClient:", walletClient);
-    
     if (!isConnected || !walletClient) {
-      const errorMsg = !isConnected 
-        ? "Wallet not connected" 
-        : "Wallet client not loaded - please try again in a moment";
-      console.error("Cannot submit:", errorMsg);
-      setError(errorMsg);
+      setError("Please connect wallet first");
       return;
     }
 
     setLoading(true);
     setError("");
     setResponse("");
-    setPaymentRequired(null);
-    setPaymentStatus("Making initial request...");
+    setPaymentStatus("Sending request...");
 
     try {
-      // Step 1: Make initial request without payment
-      const initialRes = await fetch("/api/ai", {
+      // 1. Initial Request
+      const res = await fetch("/api/ai", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
 
-      if (initialRes.status === 402) {
-        // Step 2: Payment required - parse payment requirements
-        setPaymentStatus("Payment required - preparing transaction...");
-        const paymentHeader = initialRes.headers.get("PAYMENT-REQUIRED");
-        
-        if (!paymentHeader) {
-          throw new Error("Payment required but no payment instructions received");
+      if (res.status === 402) {
+        setPaymentStatus("Payment Required (402). Parsing details...");
+        const tokenAddr = res.headers.get("x-payment-token");
+        const amount = res.headers.get("x-payment-amount");
+        const recipient = res.headers.get("x-payment-recipient");
+
+        if (!tokenAddr || !amount || !recipient) {
+          throw new Error("Invalid 402 Response headers");
         }
 
-        // Decode base64 payment requirements (v2 protocol)
-        const paymentData = JSON.parse(atob(paymentHeader));
-        setPaymentRequired(paymentData);
+        // 2. Execute Payment
+        setPaymentStatus(`Paying ${amount} CAT to ${recipient.slice(0, 6)}...`);
 
-        // Step 3: Create x402 client and sign payment
-        setPaymentStatus("Please sign the payment in MetaMask...");
-        
-        console.log("Creating x402 client...");
-        const client = new x402Client();
-        const signer = wagmiToClientSigner(walletClient);
-        registerExactEvmScheme(client, { signer });
+        const ERC20_ABI = parseAbi([
+          'function transfer(address recipient, uint256 amount) returns (bool)'
+        ]);
 
-        console.log("Creating payment payload...", paymentData);
-        // Create payment payload
-        const paymentPayload = await client.createPaymentPayload(paymentData);
-        console.log("Payment payload created:", paymentPayload);
-        
-        // Encode payment signature (v2 protocol uses base64 JSON)
-        const paymentSignature = btoa(JSON.stringify(paymentPayload));
-        console.log("Payment signature encoded");
+        const hash = await walletClient.writeContract({
+          address: tokenAddr as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: 'transfer',
+          args: [recipient as `0x${string}`, BigInt(Number(amount) * 10 ** 18)],
+          chain: shardeumMezame,
+          account: address
+        });
 
-        // Step 4: Retry request with payment signature
-        setPaymentStatus("Payment signed - sending request...");
+        setPaymentStatus(`Transaction sent: ${hash}. Waiting for confirmation...`);
+
+        await publicClient?.waitForTransactionReceipt({ hash });
+
+        // 3. Retry with Proof
+        setPaymentStatus("Transaction confirmed! Getting content...");
+
         const paidRes = await fetch("/api/ai", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "PAYMENT-SIGNATURE": paymentSignature,
+            "Authorization": `Token ${hash}`
           },
           body: JSON.stringify({ prompt }),
         });
 
-        console.log("Paid response status:", paidRes.status);
-
-        if (!paidRes.ok) {
-          const errorData = await paidRes.json();
-          console.error("Paid request failed:", errorData);
-          throw new Error(errorData.error || "Request failed after payment");
+        const data = await paidRes.json();
+        if (data.success) {
+          setResponse(data.data.text);
+          setPaymentStatus("");
+        } else {
+          setError(data.error || "Failed after payment");
         }
 
-        // Step 5: Success! Get the AI response
-        const data = await paidRes.json();
+      } else if (res.ok) {
+        const data = await res.json();
         setResponse(data.data.text);
-        setPaymentStatus("Payment successful! ✅");
-        
-      } else if (!initialRes.ok) {
-        const data = await initialRes.json();
-        throw new Error(data.error || "Failed to generate response");
       } else {
-        // No payment required (shouldn't happen with current setup)
-        const data = await initialRes.json();
-        setResponse(data.data.text);
+        const data = await res.json();
+        setError(data.error || "Request Failed");
       }
+
     } catch (err: any) {
-      console.error("Payment error:", err);
-      setError(err.message || "Payment failed");
-      setPaymentStatus("");
+      console.error(err);
+      setError(err.message || "Something went wrong");
     } finally {
       setLoading(false);
     }
   };
 
-  React.useEffect(() => {
-    getApiInfo();
-  }, []);
-
   return (
-    <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 p-8">
-      <div className="max-w-4xl mx-auto">
-        {/* Wallet Connection Header */}
-        <div className="flex justify-end mb-4">
-          {mounted && (
-            <>
-              {isConnected ? (
-                <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-lg shadow-md">
-                  <div className="text-sm">
-                    <p className="text-gray-600">Connected:</p>
-                    <p className="font-mono font-semibold text-gray-900">
-                      {address?.slice(0, 6)}...{address?.slice(-4)}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => disconnect()}
-                    className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition-colors text-sm"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              ) : (
+    <div className="min-h-screen bg-gray-50 p-8 font-sans">
+      <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-lg">
+        <h1 className="text-3xl font-bold mb-6 text-indigo-700">Shardeum Gateway</h1>
+
+        {/* Wallet Control */}
+        <div className="flex justify-between items-center mb-8 p-4 bg-gray-100 rounded-lg">
+          {mounted && isConnected ? (
+            <div className="flex items-center gap-4">
+              <span className="font-mono text-sm">{address?.slice(0, 6)}...</span>
+              <button onClick={() => disconnect()} className="text-red-500 text-sm hover:underline">Disconnect</button>
+              {chain?.id !== shardeumMezame.id && (
                 <button
-                  onClick={() => connect({ connector: connectors[0] })}
-                  className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors shadow-md"
+                  onClick={() => switchChain({ chainId: shardeumMezame.id })}
+                  className="bg-yellow-500 text-white px-3 py-1 rounded text-sm"
                 >
-                  🦊 Connect MetaMask
+                  Switch to Shardeum
                 </button>
               )}
-            </>
+            </div>
+          ) : (
+            <button
+              onClick={() => connect({ connector: connectors[0] })}
+              className="bg-indigo-600 text-white px-4 py-2 rounded"
+            >
+              Connect Wallet
+            </button>
           )}
         </div>
 
-        <div className="text-center mb-8">
-          <h1 className="text-5xl font-bold text-gray-900 mb-4">
-            ConduitX AI Gateway
-          </h1>
-          <p className="text-xl text-gray-600">
-            AI-powered content generation with x402 payment protocol
-          </p>
-        </div>
-
-        {/* {info && (
-          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-2xl font-semibold mb-4 text-gray-800">
-              API Information
-            </h2>
-            <div className="space-y-2 text-gray-700">
-              <p>
-                <span className="font-semibold">Endpoint:</span> {info.endpoint}
-              </p>
-              <p>
-                <span className="font-semibold">Method:</span> {info.method}
-              </p>
-              <p>
-                <span className="font-semibold">Cost:</span> {info.cost}
-              </p>
-              <p>
-                <span className="font-semibold">Network:</span> {info.network}
-              </p>
-              <p className="text-sm text-yellow-600 mt-4">
-                ⚠️ Note: This is a testnet demo. To make payments, you need an
-                x402-compatible client or use the command-line examples below.
-              </p>
-            </div>
+        {/* Input Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">AI Prompt</label>
+            <textarea
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+              className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-indigo-500"
+              rows={3}
+              placeholder="Ask Gemini something..."
+            />
           </div>
-        )} */}
 
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label
-                htmlFor="prompt"
-                className="block text-lg font-medium text-gray-700 mb-2"
-              >
-                Enter your prompt
-              </label>
-              <textarea
-                id="prompt"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="e.g., Explain how blockchain works in simple terms"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-gray-900"
-                rows={4}
-                required
-              />
-            </div>
+          <button
+            type="submit"
+            disabled={!mounted || loading || !isConnected}
+            className="w-full bg-black text-white py-3 rounded-lg font-bold disabled:opacity-50 hover:bg-gray-800 transition"
+          >
+            {loading ? "Processing..." : "Generate (Cost: 1 CAT)"}
+          </button>
+        </form>
 
-            <button
-              type="submit"
-              disabled={loading || !prompt.trim() || !isConnected || !walletClient}
-              className="w-full bg-indigo-600 text-white py-3 px-6 rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading
-                ? paymentStatus || "Processing..."
-                : !isConnected
-                  ? "Connect Wallet to Continue"
-                  : !walletClient
-                    ? "Loading wallet..."
-                    : "Generate AI Response ($0.01)"}
-            </button>
-
-            {!isConnected && (
-              <p className="text-sm text-gray-600 text-center mt-2">
-                Please connect your MetaMask wallet to use the AI gateway
-              </p>
-            )}
-            
-            {isConnected && chain?.id !== baseSepolia.id && (
-              <div className="text-center mt-3">
-                <button
-                  onClick={() => switchChain?.({ chainId: baseSepolia.id })}
-                  className="bg-yellow-500 text-white px-6 py-2 rounded-lg font-semibold hover:bg-yellow-600 transition-colors"
-                >
-                  ⚠️ Switch to Base Sepolia Network
-                </button>
-              </div>
-            )}
-            
-            {isConnected && chain?.id === baseSepolia.id && !walletClient && (
-              <p className="text-sm text-yellow-600 text-center mt-2">
-                ⏳ Loading wallet client... Please wait a moment
-              </p>
-            )}
-          </form>
-
-          {paymentStatus && !error && !response && (
-            <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <p className="text-blue-800 font-semibold">
-                {paymentStatus}
-              </p>
+        {/* Status & Output */}
+        <div className="mt-6 space-y-4">
+          {paymentStatus && (
+            <div className="p-3 bg-blue-50 text-blue-700 rounded border border-blue-200 text-sm">
+              {paymentStatus}
             </div>
           )}
 
           {error && (
-            <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-red-800 font-semibold">{error}</p>
-              
-              {paymentRequired && (
-                <div className="mt-3 text-sm text-red-700">
-                  <p>Payment Requirements:</p>
-                  <ul className="list-disc list-inside mt-2 space-y-1">
-                    <li>Network: Base Sepolia (Testnet)</li>
-                    <li>Cost: $0.01 USDC</li>
-                    <li>
-                      Get testnet USDC:{" "}
-                      <a
-                        href="https://faucet.circle.com/"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline hover:text-red-900"
-                      >
-                        Circle Faucet
-                      </a>
-                    </li>
-                  </ul>
-                </div>
-              )}
+            <div className="p-3 bg-red-50 text-red-700 rounded border border-red-200">
+              {error}
             </div>
           )}
 
           {response && (
-            <div className="mt-6 p-6 bg-green-50 border border-green-200 rounded-lg">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">
-                AI Response:
-              </h3>
-              <p className="text-gray-700 whitespace-pre-wrap">{response}</p>
+            <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+              <h3 className="font-bold text-green-800 mb-2">Response:</h3>
+              <p className="whitespace-pre-wrap text-gray-800">{response}</p>
             </div>
           )}
         </div>
 
-        <div className="mt-8 text-center text-gray-600">
-          <p className="text-sm">
-            Powered by Google Gemini + x402 Protocol on Base Sepolia
-          </p>
-        </div>
       </div>
     </div>
   );

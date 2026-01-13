@@ -1,49 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { withX402 } from "@x402/next";
-import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
-import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { verifyPayment } from "../../lib/payment";
 
 // Initialize Gemini AI
+// NOTE: Ensure GOOGLE_API_KEY is set in .env
 const ai = new GoogleGenAI({
-  apiKey: process.env.GOOGLE_API_KEY,
+  apiKey: process.env.GOOGLE_API_KEY || "",
 });
 
-// Your receiving wallet address
-const payTo = process.env.WALLET_ADDRESS || "0xYourWalletAddressHere";
-
-// Create facilitator client (testnet - Base Sepolia)
-const facilitatorClient = new HTTPFacilitatorClient({
-  url: "https://x402.org/facilitator"
-});
-
-// Create resource server and register EVM scheme
-const server = new x402ResourceServer(facilitatorClient);
-registerExactEvmScheme(server); // Register the EVM scheme
-
-// Define payment configuration
-const routeConfig = {
-  accepts: [
-    {
-      scheme: "exact" as const,
-      price: "$0.01", // 1 cent per AI request
-      network: "eip155:84532" as `${string}:${string}`, // Base Sepolia testnet
-      payTo,
-    },
-  ],
-  description: "AI-powered content generation using Google Gemini 2.5 Flash",
-  mimeType: "application/json",
-  extensions: {
-    bazaar: {
-      discoverable: true,
-      category: "ai",
-      tags: ["gemini", "ai", "generation", "llm"],
-    },
-  },
-};
+const COST_IN_CAT = 1; // 1 CAT Token
 
 // API route handler with AI logic
 const handler = async (req: NextRequest): Promise<NextResponse> => {
+  // 1. Verify Payment
+  const paymentResponse = await verifyPayment(req, COST_IN_CAT);
+  if (paymentResponse) {
+    return paymentResponse;
+  }
+
   try {
     // Parse request body
     const body = await req.json();
@@ -54,6 +28,15 @@ const handler = async (req: NextRequest): Promise<NextResponse> => {
       return NextResponse.json(
         { error: "Invalid request: 'prompt' is required and must be a string" },
         { status: 400 }
+      );
+    }
+
+    // Check API Key
+    if (!process.env.GOOGLE_API_KEY) {
+      console.error("Error: GOOGLE_API_KEY is missing in environment variables.");
+      return NextResponse.json(
+        { error: "Server Configuration Error: Missing API Key" },
+        { status: 500 }
       );
     }
 
@@ -73,31 +56,26 @@ const handler = async (req: NextRequest): Promise<NextResponse> => {
       },
     });
   } catch (error: any) {
-    console.error("AI generation error:", error);
+    console.error("AI generation error full details:", error);
     return NextResponse.json(
       {
         error: "Failed to generate AI response",
-        details: error.message,
+        details: error.message || error.toString(),
       },
       { status: 500 }
     );
   }
 };
 
-// Wrap the handler with x402 payment protection
-// Payment is only settled after successful response (status < 400)
-export const POST = withX402(handler, routeConfig, server);
+export const POST = handler;
+
 export const GET = async (req: NextRequest) => {
   return NextResponse.json({
     message: "AI API Gateway is running",
     endpoint: "/api/ai",
     method: "POST",
     paymentRequired: true,
-    cost: "$0.01 per request",
-    network: "Base Sepolia (testnet)",
-    body: {
-      prompt: "Your prompt here",
-      model: "gemini-2.5-flash",
-    },
+    cost: "1 CAT Token",
+    network: "Shardeum EVM Testnet",
   });
 };
